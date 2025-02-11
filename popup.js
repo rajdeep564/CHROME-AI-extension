@@ -63,7 +63,7 @@ function updateStats() {
         }
 
         // Force UI refresh if needed
-        forceReflow();
+        // forceReflow();
     });
 }
 

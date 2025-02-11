@@ -1,176 +1,199 @@
-const AI_SITES = ["chatgpt.com", "claude.ai", "gemini.google.com", "bard.google.com"];
+const AI_SITES = {
+    "chatgpt.com": "ChatGPT",
+    "claude.ai": "Claude",
+    "gemini.google.com": "Gemini",
+    "bard.google.com": "Bard"
+};
+
 let currentTabId = null;
 let trackingStart = null;
-let trackingData = {};
 
-// Load stored tracking data and ensure daily reset
-chrome.storage.local.get("aiTrackerData", (data) => {
-    trackingData = data.aiTrackerData || {};
-    resetDailyData();
-});
-
-// Ensure daily reset
-function resetDailyData() {
-    let today = new Date().toISOString().split("T")[0];
-    if (trackingData.date !== today) {
-        console.log("🔄 Resetting daily tracking data.");
-        trackingData = { 
-            date: today, 
-            totalTime: 0, 
-            aiTime: 0, 
-            aiUsage: {}, 
-            lastAIUsed: { website: null, timestamp: null }, // Ensure it's always present
-            tabsOpened: 0, 
-            tabsClosed: 0 
-        };
-        chrome.storage.local.set({ aiTrackerData: trackingData });
+// Extract clean domain name from URL
+function getCleanDomain(url) {
+    try {
+        const urlObj = new URL(url);
+        return Object.keys(AI_SITES).find(domain => urlObj.hostname.includes(domain)) || "unknown";
+    } catch {
+        return "unknown";
     }
 }
 
+// Initialize or reset daily data
+function initializeDailyData() {
+    const today = new Date().toISOString().split("T")[0];
+    const defaultData = {
+        totalTime: 0,
+        aiTime: 0,
+        aiUsage: {},
+        lastAIUsed: {
+            website: null,
+            timestamp: null
+        },
+        tabsOpened: 0,
+        tabsClosed: 0
+    };
 
-// Converts milliseconds to hh:mm:ss format
-function formatTime(ms) {
-    let seconds = Math.floor(ms / 1000);
-    let hours = Math.floor(seconds / 3600);
-    let minutes = Math.floor((seconds % 3600) / 60);
-    seconds = seconds % 60;
-    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    chrome.storage.local.set({ [today]: defaultData });
+    return defaultData;
 }
 
-// Update tracking data in storage safely
-function updateTrackingData(updateObj) {
+// Get today's data
+async function getTodayData() {
     const today = new Date().toISOString().split("T")[0];
-
-    chrome.storage.local.get(["aiTrackerData"], (result) => {
-        let data = result.aiTrackerData || { 
-            date: today, 
-            totalTime: 0, 
-            aiTime: 0, 
-            aiUsage: {}, 
-            lastAIUsed: { website: null, timestamp: null }, 
-            tabsOpened: 0, 
-            tabsClosed: 0 
-        };
-
-        // Ensure daily reset
-        if (data.date !== today) {
-            console.log("🔄 Daily reset triggered in updateTrackingData.");
-            resetDailyData();
-            return;
-        }
-
-        // Merge updates properly
-        Object.keys(updateObj).forEach((key) => {
-            if (typeof updateObj[key] === "number") {
-                data[key] = (data[key] || 0) + updateObj[key]; // ✅ Accumulate values
-            } else if (typeof updateObj[key] === "object") {
-                Object.keys(updateObj[key]).forEach((subKey) => {
-                    data[key][subKey] = (data[key][subKey] || 0) + updateObj[key][subKey]; // ✅ Accumulate AI usage time
-                });
-            } else {
-                data[key] = updateObj[key]; // Direct assignment for non-numeric fields
-            }
-        });
-
-        chrome.storage.local.set({ aiTrackerData: data }, () => {
-            console.log("✅ Updated Tracking Data:", data);
+    return new Promise((resolve) => {
+        chrome.storage.local.get([today], (result) => {
+            resolve(result[today] || initializeDailyData());
         });
     });
 }
 
+// Update storage with new data
+// Update storage with new data and cumulative tab count
+// Update storage with new data
+async function updateStorage(updates) {
+    const today = new Date().toISOString().split("T")[0];
+    const currentData = await getTodayData();
 
-// Starts tracking AI site usage
+    // Deep merge updates
+    const newData = {
+        ...currentData,
+        ...updates,
+        aiUsage: {
+            ...currentData.aiUsage,
+            ...(updates.aiUsage || {})
+        },
+        tabsOpened: currentData.tabsOpened + (updates.tabsOpened || 0),
+        tabsClosed: currentData.tabsClosed + (updates.tabsClosed || 0)
+    };
+
+    chrome.storage.local.set({ [today]: newData });
+}
+
+// Track total tabs opened
+chrome.tabs.onCreated.addListener(() => {
+    updateStorage({ tabsOpened: 1 });
+});
+
+// Track total tabs closed
+chrome.tabs.onRemoved.addListener((tabId) => {
+    if (currentTabId === tabId) {
+        stopTracking();
+    }
+    updateStorage({ tabsClosed: 1 });
+});
+
+
+// // Track total tabs opened
+// chrome.tabs.onCreated.addListener(() => {
+//     updateStorage({ tabsOpened: 1 });
+// });
+
+// // Track total tabs closed
+// chrome.tabs.onRemoved.addListener((tabId) => {
+//     if (currentTabId === tabId) {
+//         stopTracking();
+//     }
+//     updateStorage({ tabsClosed: 1 });
+// });
+
 function startTracking(tabId, url) {
     if (currentTabId !== tabId) {
-        stopTracking(); // Stop previous tracking session if any
+        stopTracking();
         currentTabId = tabId;
         trackingStart = Date.now();
-        console.log(`▶ Started tracking: ${url} at ${new Date().toLocaleTimeString()}`);
-
-        if (!trackingData.aiUsage[url]) trackingData.aiUsage[url] = 0;
-
-        updateTrackingData({ lastAIUsed: { website: url.replace(/^0/, ""), timestamp: Date.now() } }); // ✅ Fix "0" prefix issue
+        
+        const domain = getCleanDomain(url);
+        const siteName = AI_SITES[domain] || domain;
+        
+        updateStorage({
+            lastAIUsed: {
+                website: siteName,
+                timestamp: Date.now()
+            }
+        });
     }
 }
 
-
-// Stops tracking and logs usage
-function stopTracking() {
+async function stopTracking() {
     if (currentTabId && trackingStart) {
-        let elapsed = Date.now() - trackingStart;
-        console.log(`⏸ Stopping tracking. Time spent: ${formatTime(elapsed)}`);
-
-        let currentUrl = trackingData.lastAIUsed?.website ? trackingData.lastAIUsed.website : "unknown"; // Ensure safe access
-
-        updateTrackingData({
-            totalTime: elapsed,
-            aiTime: AI_SITES.some((site) => currentUrl.includes(site)) ? elapsed : 0,
-            aiUsage: { [currentUrl]: elapsed }
-        });
+        const elapsed = Date.now() - trackingStart;
+        const data = await getTodayData();
+        const currentSite = data.lastAIUsed?.website;
+        
+        if (currentSite && currentSite !== 'unknown') {
+            const updates = {
+                totalTime: data.totalTime + elapsed,
+                aiTime: data.aiTime + elapsed,
+                aiUsage: {
+                    [currentSite]: (data.aiUsage[currentSite] || 0) + elapsed
+                }
+            };
+            await updateStorage(updates);
+        }
 
         trackingStart = null;
         currentTabId = null;
     }
 }
 
-
-// Track when a tab is updated (URL change)
+// Event Listeners
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.url || changeInfo.status === "complete") {
-        if (!tab.url) {
-            console.error("⛔ Error: Tab URL is undefined!");
-            return;
-        }
-
-        let isAI = AI_SITES.some((site) => tab.url.includes(site));
-        if (isAI) {
-            console.log(`🌍 AI Site detected: ${tab.url}, starting tracking.`);
+        if (!tab.url) return;
+        
+        const domain = getCleanDomain(tab.url);
+        if (domain in AI_SITES) {
             startTracking(tabId, tab.url);
         } else if (currentTabId === tabId) {
-            console.log(`🚫 Navigated away from AI site, pausing tracking.`);
             stopTracking();
         }
     }
 });
 
-// Track when a tab is activated (switched)
-chrome.tabs.onActivated.addListener((activeInfo) => {
-    chrome.tabs.get(activeInfo.tabId, (tab) => {
-        if (chrome.runtime.lastError || !tab.url) {
-            console.error("⛔ Error: Could not get tab info or URL is undefined.");
-            return;
-        }
-
-        let isAI = AI_SITES.some((site) => tab.url.includes(site));
-        if (isAI) {
-            console.log(`🔄 Switched to AI site: ${tab.url}, resuming tracking.`);
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+    try {
+        const tab = await chrome.tabs.get(activeInfo.tabId);
+        const domain = getCleanDomain(tab.url);
+        
+        if (domain in AI_SITES) {
             startTracking(activeInfo.tabId, tab.url);
         } else {
-            console.log(`⏸ Switched to a non-AI site, pausing tracking.`);
             stopTracking();
         }
-    });
-});
-
-// Track when a tab is closed
-chrome.tabs.onRemoved.addListener((tabId) => {
-    if (currentTabId === tabId) {
-        console.log("❌ Tracked AI tab closed, stopping tracking.");
-        stopTracking();
-        updateTrackingData({ tabsClosed: 1 });
+    } catch (error) {
+        console.error("Error in tab activation:", error);
     }
 });
 
-// Track when a new tab is opened
-chrome.tabs.onCreated.addListener(() => {
-    console.log("🆕 New tab opened.");
-    updateTrackingData({ tabsOpened: 1 });
+// chrome.tabs.onRemoved.addListener((tabId) => {
+//     if (currentTabId === tabId) {
+//         stopTracking();
+//         updateStorage({ tabsClosed: 1 });
+//     }
+// });
+
+// chrome.tabs.onCreated.addListener(() => {
+//     updateStorage({ tabsOpened: 1 });
+// });
+
+// Set up daily reset
+chrome.alarms.create('dailyReset', { 
+    when: getNextMidnight(),
+    periodInMinutes: 1440 // 24 hours
 });
 
-// Setup an alarm for daily reset
-chrome.alarms.create("dailyReset", { periodInMinutes: 1440 }); // 1440 minutes = 24 hours
+function getNextMidnight() {
+    const now = new Date();
+    const midnight = new Date(now);
+    midnight.setHours(24, 0, 0, 0);
+    return midnight.getTime();
+}
+
 chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === "dailyReset") {
-        resetDailyData();
+    if (alarm.name === 'dailyReset') {
+        initializeDailyData();
     }
 });
+
+// Initialize on extension load
+initializeDailyData();
