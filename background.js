@@ -1,3 +1,64 @@
+let browsingStart = null;
+
+async function initializeBrowsingTime() {
+    const today = new Date().toISOString().split("T")[0];
+
+    chrome.storage.local.get([today], (result) => {
+        const data = result[today] || {
+            totalTime: 0,
+            aiTime: 0,
+            aiUsage: {},
+            lastAIUsed: {
+                website: null,
+                timestamp: null
+            },
+            tabsOpened: 0,
+            tabsClosed: 0
+        };
+
+        // Start tracking from now
+        browsingStart = Date.now();
+
+        // Save initial data if not already set
+        chrome.storage.local.set({ [today]: data });
+    });
+}
+
+// Call on extension load
+initializeBrowsingTime();
+setInterval(async () => {
+    if (!trackingStart) return; // Only update if tracking is active
+
+    const today = new Date().toISOString().split("T")[0];
+    const data = await getTodayData();
+    const elapsed = Date.now() - trackingStart;
+    const currentSite = data.lastAIUsed?.website;
+
+    let updates = {
+        totalTime: data.totalTime + 1000, // Increase total time by 1 second
+    };
+
+    if (currentSite && currentSite !== "unknown") {
+        updates.aiTime = data.aiTime + 1000; // Increase AI time by 1 second
+        updates.aiUsage = {
+            ...data.aiUsage,
+            [currentSite]: (data.aiUsage[currentSite] || 0) + 1000
+        };
+    }
+
+    updateStorage(updates);
+}, 1000); // Run every second
+
+
+setInterval(async () => {
+    const elapsed = Date.now() - browsingStart;
+    const data = await getTodayData();
+
+    updateStorage({
+        totalTime: elapsed // Total browsing time updates live
+    });
+}, 1000); // Updates every second
+
 const AI_SITES = {
     "chatgpt.com": "ChatGPT",
     "claude.ai": "Claude",
@@ -119,22 +180,21 @@ async function stopTracking() {
         const elapsed = Date.now() - trackingStart;
         const data = await getTodayData();
         const currentSite = data.lastAIUsed?.website;
-        
-        if (currentSite && currentSite !== 'unknown') {
-            const updates = {
-                totalTime: data.totalTime + elapsed,
-                aiTime: data.aiTime + elapsed,
-                aiUsage: {
-                    [currentSite]: (data.aiUsage[currentSite] || 0) + elapsed
-                }
-            };
-            await updateStorage(updates);
-        }
+
+        const updates = {
+            aiTime: data.aiTime + (currentSite && currentSite !== "unknown" ? elapsed : 0),
+            aiUsage: {
+                ...data.aiUsage,
+                [currentSite]: (data.aiUsage[currentSite] || 0) + (currentSite && currentSite !== "unknown" ? elapsed : 0)
+            }
+        };
+        await updateStorage(updates);
 
         trackingStart = null;
         currentTabId = null;
     }
 }
+
 
 // Event Listeners
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
